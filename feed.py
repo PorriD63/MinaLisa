@@ -52,7 +52,7 @@ def read_rows(path):
 def write_rows(path, header, rows):
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8-sig", newline="") as f:
-        w = csv.DictWriter(f, fieldnames=header)
+        w = csv.DictWriter(f, fieldnames=header, lineterminator="\n")
         w.writeheader()
         w.writerows(rows)
 
