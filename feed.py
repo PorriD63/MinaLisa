@@ -22,6 +22,12 @@ from pathlib import Path
 # ===== 設定（需要調整時改這裡）=====
 FOOD_NAME = "皇家 K36 幼貓乾糧"
 FOOD_KCAL_PER_KG = 4083   # 代謝能；若包裝上的數字不同，改成包裝的
+MAIN_FOOD = "K36"
+FOODS = {
+    # 代號: (名稱, kcal/kg)。add 時用 --food 代號；沒寫就是 K36
+    "K36": (FOOD_NAME, FOOD_KCAL_PER_KG),
+    "肉泥": ("汪喵星球 純肉泥", 1000),   # 估計值（肉＋高湯約 1 kcal/g）；有包裝標示再改
+}
 ADULT_WEIGHT_KG = 5.5     # 長大後的預估體重，只用在幼貓成長公式（不是現在的體重）
 CATS = {
     # factor：建議量的調整係數。結紮後或獸醫建議增減時再改，例如 0.9
@@ -35,7 +41,7 @@ BASE = Path(__file__).resolve().parent
 FEED_CSV = BASE / "data" / "feedings.csv"
 WEIGHT_CSV = BASE / "data" / "weights.csv"
 REPORT = BASE / "飲食紀錄.md"
-FEED_HEADER = ["日期", "時間", "貓", "克數", "備註"]
+FEED_HEADER = ["日期", "時間", "貓", "克數", "食物", "備註"]
 WEIGHT_HEADER = ["日期", "貓", "體重kg"]
 WEEKDAYS = "一二三四五六日"
 
@@ -62,8 +68,12 @@ def append_rows(path, header, rows):
 
 
 def load():
-    feeds = [{**r, "日期": date.fromisoformat(r["日期"]), "克數": float(r["克數"])}
-             for r in read_rows(FEED_CSV)]
+    feeds = []
+    for r in read_rows(FEED_CSV):
+        food = r.get("食物") or MAIN_FOOD
+        grams = float(r["克數"])
+        feeds.append({**r, "日期": date.fromisoformat(r["日期"]), "克數": grams, "食物": food,
+                      "kcal": grams * FOODS[food][1] / 1000})
     weights = [{"日期": date.fromisoformat(r["日期"]), "貓": r["貓"], "kg": float(r["體重kg"])}
                for r in read_rows(WEIGHT_CSV)]
     return feeds, weights
@@ -72,6 +82,7 @@ def load():
 # ---------- 計算 ----------
 
 def kcal(grams):
+    """K36 克數 → kcal（其他食物的熱量在 load() 時就算好）。"""
     return grams * FOOD_KCAL_PER_KG / 1000
 
 
@@ -98,14 +109,28 @@ def target_kcal(cat, d, weights):
     return 100 * kg ** 0.67 * 6.7 * (math.exp(-0.189 * p) - 0.66) * CATS[cat]["factor"]
 
 
-def eaten(cat, d, feeds):
-    return sum(f["克數"] for f in feeds if f["貓"] == cat and f["日期"] == d)
+def day_feeds(cat, d, feeds):
+    return [f for f in feeds if f["貓"] == cat and f["日期"] == d]
 
 
-def remaining(target, grams_eaten):
-    """離每日建議還差多少：差 5 g 以內或超過不到 10% 都算達標。"""
-    rest = grams_for(target - kcal(grams_eaten))
-    if kcal(grams_eaten) > target * 1.1:
+def eaten_kcal(cat, d, feeds):
+    return sum(f["kcal"] for f in day_feeds(cat, d, feeds))
+
+
+def grams_text(rows):
+    """「66.4 g + 肉泥 3 g」：K36 寫克數，其他食物加上名稱。"""
+    by_food = {}
+    for f in rows:
+        by_food[f["食物"]] = by_food.get(f["食物"], 0) + f["克數"]
+    parts = [f"{g(by_food.pop(MAIN_FOOD))} g"] if MAIN_FOOD in by_food else []
+    parts += [f"{food} {g(x)} g" for food, x in by_food.items()]
+    return " + ".join(parts) or "0 g"
+
+
+def remaining(target, kcal_eaten):
+    """離每日建議還差多少（換算成 K36 克數）：差 5 g 以內或超過不到 10% 都算達標。"""
+    rest = grams_for(target - kcal_eaten)
+    if kcal_eaten > target * 1.1:
         return f"已超過約 {round(-rest)} g"
     if rest <= 5:
         return "已達標 🎉"
@@ -152,7 +177,8 @@ def render(feeds, weights, today):
     lines = [
         f"# 🐾 {' & '.join(cats)} 飲食紀錄",
         "",
-        f"> 最後更新：{datetime.now():%Y-%m-%d %H:%M}　·　飼料：{FOOD_NAME}（1 g ≈ {kcal(1):.2f} kcal）",
+        f"> 最後更新：{datetime.now():%Y-%m-%d %H:%M}　·　"
+        + "　".join(f"{name}（1 g ≈ {k / 1000:.2f} kcal）" for name, k in FOODS.values()),
         "> 這份檔案是自動產生的，不用手動改。要記錄餵食，直接跟 Claude 說「Mina 吃了 20 克」就好。",
         "",
         f"## 📅 今天 {today.year}/{md(today)}",
@@ -164,8 +190,8 @@ def render(feeds, weights, today):
     stats = {}
     for c in cats:
         t = target_kcal(c, today, weights)
-        e = eaten(c, today, feeds)
-        stats[c] = (t, e, kcal(e) / t * 100 if t else None)
+        e = eaten_kcal(c, today, feeds)
+        stats[c] = (t, e, e / t * 100 if t else None)
 
     def row(label, fn):
         lines.append(f"| {label} | " + " | ".join(fn(c) for c in cats) + " |")
@@ -178,7 +204,7 @@ def render(feeds, weights, today):
     row("體重", weight_cell)
     row("**每日建議**", lambda c: f"**{round(stats[c][0])} kcal ≈ {round(grams_for(stats[c][0]))} g**"
         if stats[c][0] else "需要先記錄體重")
-    row("今天已吃", lambda c: f"{g(stats[c][1])} g · {round(kcal(stats[c][1]))} kcal")
+    row("今天已吃", lambda c: f"{grams_text(day_feeds(c, today, feeds))} · {round(stats[c][1])} kcal")
     row("進度", lambda c: f"{bar(stats[c][2])} {round(stats[c][2])}%" if stats[c][2] is not None else "—")
     row("狀態", lambda c: f"**{remaining(stats[c][0], stats[c][1])}**" if stats[c][0] else "—")
 
@@ -190,11 +216,11 @@ def render(feeds, weights, today):
         by_time = {}
         for f in todays:
             slot = by_time.setdefault(f["時間"], {"notes": []})
-            slot[f["貓"]] = slot.get(f["貓"], 0) + f["克數"]
+            slot.setdefault(f["貓"], []).append(f)
             if f["備註"] and f["備註"] not in slot["notes"]:
                 slot["notes"].append(f["備註"])
         for t, slot in by_time.items():
-            cells = [f"{g(slot[c])} g" if c in slot else "—" for c in cats]
+            cells = [grams_text(slot[c]) if c in slot else "—" for c in cats]
             lines.append(f"| {t or '—'} | " + " | ".join(cells) + f" | {'、'.join(slot['notes'])} |")
     else:
         lines.append("_今天還沒有紀錄_")
@@ -208,14 +234,15 @@ def render(feeds, weights, today):
     while d >= start:
         cells = []
         for c in cats:
-            e = eaten(c, d, feeds)
+            rows = day_feeds(c, d, feeds)
             t = target_kcal(c, d, weights)
-            if e == 0:
+            if not rows:
                 cells.append("—")
                 continue
-            pct = kcal(e) / t * 100 if t else 0
+            e = eaten_kcal(c, d, feeds)
+            pct = e / t * 100 if t else 0
             mark = "進行中" if d == today else verdict(pct)
-            cells.append(f"{g(e)} g · {round(kcal(e))} kcal · {round(pct)}% {mark}")
+            cells.append(f"{grams_text(rows)} · {round(e)} kcal · {round(pct)}% {mark}")
         lines.append(f"| {md(d)} | " + " | ".join(cells) + " |")
         d -= timedelta(days=1)
     lines += ["", "✅ 達成 90–110%　🔽 低於 90%　🔼 超過 110%　— 沒有紀錄"]
@@ -238,6 +265,7 @@ def render(feeds, weights, today):
         "- **公式**：NRC 2006 幼貓成長需求　每日 kcal = 100 × 體重<sup>0.67</sup> × 6.7 × (e<sup>−0.189 × 體重 ÷ 成貓體重</sup> − 0.66)",
         f"- **長大後的預估體重**：{g(ADULT_WEIGHT_KG)} kg（布偶母貓成年約 4.5–6.8 kg）。這**不是現在的體重**，公式用它判斷「還要長多少」：離成年體重越遠，每公斤需要的熱量越高。",
         f"- **K36 熱量**：{FOOD_KCAL_PER_KG:,} kcal/kg，每克約 {kcal(1):.2f} kcal（皇家 Kitten 乾糧規格；若包裝上的「代謝能」不同，以包裝為準）",
+        f"- **肉泥熱量**：{FOODS['肉泥'][0]} 查不到官方數字，暫以每克約 {FOODS['肉泥'][1] / 1000:.1f} kcal 估計；「還差多少 g」都換算成 K36 的克數。",
         "- **皇家包裝餵食表（只餵乾糧）**：1.3–2 kg、3–4 個月 61–67 g；2.3–2.9 kg、5–6 個月 67–70 g；3.1–4 kg、7–12 個月 51–65 g",
         "- 布偶貓體型大、發育期長，所以建議量會比包裝表略高。真正的標準是：**每週體重穩定上升、摸得到肋骨但看不到**。",
         "- 結紮後熱量需求會下降，記得跟獸醫討論新的份量；K36 適用到 12 個月大。",
@@ -251,12 +279,13 @@ def today_summary(feeds, weights, today):
     out = [f"{today.year}/{md(today)} 今天進度："]
     for c in CATS:
         t = target_kcal(c, today, weights)
-        e = eaten(c, today, feeds)
+        e = eaten_kcal(c, today, feeds)
+        text = grams_text(day_feeds(c, today, feeds))
         if t is None:
-            out.append(f"  {c}  {g(e)} g = {round(kcal(e))} kcal（還沒有體重，無法算建議量）")
+            out.append(f"  {c}  {text} = {round(e)} kcal（還沒有體重，無法算建議量）")
             continue
-        out.append(f"  {c}  {g(e)} g = {round(kcal(e))} kcal / 建議 {round(t)} kcal"
-                   f"（{round(kcal(e) / t * 100)}%）→ {remaining(t, e)}")
+        out.append(f"  {c}  {text} = {round(e)} kcal / 建議 {round(t)} kcal"
+                   f"（{round(e / t * 100)}%）→ {remaining(t, e)}")
     return "\n".join(out)
 
 
@@ -280,6 +309,7 @@ def main():
     a.add_argument("--date")
     a.add_argument("--time")
     a.add_argument("--note", default="")
+    a.add_argument("--food", default=MAIN_FOOD, choices=list(FOODS))
     w = sub.add_parser("weight", help="記錄體重")
     w.add_argument("cat")
     w.add_argument("kg", type=float)
@@ -297,14 +327,17 @@ def main():
         cat = resolve_cat(args.cat, allow_both=True)
         d = date.fromisoformat(args.date) if args.date else today
         t = args.time or (f"{now:%H:%M}" if d == today else "")
+        food = "" if args.food == MAIN_FOOD else args.food
         if cat == "both":
             each, note = args.grams / 2, "、".join(filter(None, [f"兩隻共 {g(args.grams)} g 平分", args.note]))
-            rows = [{"日期": d, "時間": t, "貓": c, "克數": g(each), "備註": note} for c in CATS]
+            rows = [{"日期": d, "時間": t, "貓": c, "克數": g(each), "食物": food, "備註": note} for c in CATS]
         else:
-            rows = [{"日期": d, "時間": t, "貓": cat, "克數": g(args.grams), "備註": args.note}]
+            rows = [{"日期": d, "時間": t, "貓": cat, "克數": g(args.grams), "食物": food, "備註": args.note}]
         append_rows(FEED_CSV, FEED_HEADER, rows)
+        k = FOODS[args.food][1] / 1000
         for r in rows:
-            print(f"已記錄：{r['貓']} {r['克數']} g（{round(kcal(float(r['克數'])))} kcal）{d.month}/{d.day} {t}".rstrip())
+            print(f"已記錄：{r['貓']} {args.food} {r['克數']} g（{round(float(r['克數']) * k)} kcal）"
+                  f"{d.month}/{d.day} {t}".rstrip())
     elif args.cmd == "weight":
         cat = resolve_cat(args.cat)
         d = date.fromisoformat(args.date) if args.date else today
@@ -319,7 +352,7 @@ def main():
             sys.exit("沒有餵食紀錄可以刪除")
         n = min(args.n, len(rows))
         for r in rows[-n:]:
-            print(f"已刪除：{r['日期']} {r['時間']} {r['貓']} {r['克數']} g {r['備註']}".rstrip())
+            print(f"已刪除：{r['日期']} {r['時間']} {r['貓']} {r.get('食物') or MAIN_FOOD} {r['克數']} g {r['備註']}".rstrip())
         write_rows(FEED_CSV, FEED_HEADER, rows[:-n])
 
     feeds, weights = load()
