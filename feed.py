@@ -18,6 +18,9 @@ import math
 import sys
 from datetime import date, datetime, timedelta
 from pathlib import Path
+from zoneinfo import ZoneInfo
+
+TZ = ZoneInfo("Asia/Taipei")  # 一律用台灣時間判斷「今天」與現在時刻
 
 # ===== 設定（需要調整時改這裡）=====
 FOOD_NAME = "皇家 K36 幼貓乾糧"
@@ -177,7 +180,7 @@ def render(feeds, weights, today):
     lines = [
         f"# 🐾 {' & '.join(cats)} 飲食紀錄",
         "",
-        f"> 最後更新：{datetime.now():%Y-%m-%d %H:%M}　·　"
+        f"> 最後更新：{datetime.now(TZ):%Y-%m-%d %H:%M}　·　"
         + "　".join(f"{name}（1 g ≈ {k / 1000:.2f} kcal）" for name, k in FOODS.values()),
         "> 這份檔案是自動產生的，不用手動改。要記錄餵食，直接跟 Claude 說「Mina 吃了 20 克」就好。",
         "",
@@ -320,7 +323,7 @@ def main():
     sub.add_parser("render", help="重新產生 飲食紀錄.md")
     args = ap.parse_args()
 
-    now = datetime.now()
+    now = datetime.now(TZ)
     today = now.date()
 
     if args.cmd == "add":
