@@ -46,4 +46,11 @@ python3 feed.py add Lisa 18 --time 08:30
 - `刪除 11/2 14:16 Lisa 30g（記錯）`
 - `K36 熱量改成包裝標示 4,000 kcal/kg`
 
-訊息最後加上 `Co-Authored-By` 署名行。只 commit，不要 push（除非使用者要求）。
+訊息最後加上 `Co-Authored-By` 署名行。
+
+## 自動 push 與合併回 main（使用者已同意，每次都做，不用再問）
+commit 後立刻 push，並讓 main 同步到最新：
+- 若在工作分支（如 `claude/...`）：`git push -u origin <分支>`，再 `git push origin HEAD:main`（fast-forward 合併回 main）。
+- 若直接在 main 上：`git push origin main`。
+- 若 main 有工作分支沒有的新 commit（無法 fast-forward）：先 `git fetch origin main && git rebase origin/main` 再 push；有衝突就停下來問使用者。
+- 不要 force push。
