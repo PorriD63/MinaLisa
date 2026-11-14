@@ -5,6 +5,7 @@
 
 ## 檔案
 - `飲食紀錄.md`：給使用者看的頁面，由 `feed.py` 自動產生，**不要手動編輯**。
+- `README.md`：GitHub 首頁，顯示今天進度與最近 7 天折線圖（Mermaid），也由 `feed.py` 自動產生，**不要手動編輯**。
 - `data/feedings.csv`、`data/weights.csv`：原始資料。
 - `feed.py`：記錄與計算工具；最上面的「設定」區塊放飼料熱量、預估成貓體重、每隻貓的調整係數。
 

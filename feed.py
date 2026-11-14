@@ -7,9 +7,9 @@
   python3 feed.py weight <貓> <公斤> [--date YYYY-MM-DD]
   python3 feed.py undo [筆數]   刪除最後 N 筆餵食（預設 1）
   python3 feed.py today         顯示今天進度
-  python3 feed.py render        重新產生 飲食紀錄.md
+  python3 feed.py render        重新產生 飲食紀錄.md 與 README.md
 
-每次 add / weight / undo 之後都會自動重新產生 飲食紀錄.md。
+每次 add / weight / undo 之後都會自動重新產生 飲食紀錄.md 與 README.md。
 """
 import argparse
 import calendar
@@ -44,6 +44,10 @@ BASE = Path(__file__).resolve().parent
 FEED_CSV = BASE / "data" / "feedings.csv"
 WEIGHT_CSV = BASE / "data" / "weights.csv"
 REPORT = BASE / "飲食紀錄.md"
+README = BASE / "README.md"
+CHART_DAYS = 7
+CHART_COLORS = {"Mina": ("#3b82f6", "🟦"), "Lisa": ("#f97316", "🟧")}  # 折線圖每隻貓的顏色
+TARGET_COLOR = "#9ca3af"
 FEED_HEADER = ["日期", "時間", "貓", "克數", "食物", "備註"]
 WEIGHT_HEADER = ["日期", "貓", "體重kg"]
 WEEKDAYS = "一二三四五六日"
@@ -175,15 +179,65 @@ def verdict(pct):
 
 # ---------- 產生報表 ----------
 
-def render(feeds, weights, today):
-    cats = list(CATS)
-    lines = [
-        f"# 🐾 {' & '.join(cats)} 飲食紀錄",
+def header_lines(note):
+    return [
+        f"# 🐾 {' & '.join(CATS)} 飲食紀錄",
         "",
         f"> 最後更新：{datetime.now(TZ):%Y-%m-%d %H:%M}　·　"
         + "　".join(f"{name}（1 g ≈ {k / 1000:.2f} kcal）" for name, k in FOODS.values()),
-        "> 這份檔案是自動產生的，不用手動改。要記錄餵食，直接跟 Claude 說「Mina 吃了 20 克」就好。",
+        f"> {note}",
         "",
+    ]
+
+
+def chart_lines(feeds, weights, today, days=CHART_DAYS):
+    """最近 N 天（不含今天）每天吃了建議量的幾 %，用 GitHub 會直接畫出來的 Mermaid 折線圖。"""
+    cats = list(CATS)
+    end = today - timedelta(days=1)
+    first = min((f["日期"] for f in feeds), default=today)
+    dates = [end - timedelta(days=i) for i in range(days - 1, -1, -1)]
+    dates = [d for d in dates if d >= first]
+    if not dates:
+        return []
+    series = {}
+    for c in cats:
+        vals = []
+        for d in dates:
+            t = target_kcal(c, d, weights)
+            vals.append(round(eaten_kcal(c, d, feeds) / t * 100) if t else 0)
+        series[c] = vals
+    top = max(120, math.ceil(max(max(v) for v in series.values()) / 10) * 10 + 10)
+    palette = ", ".join([CHART_COLORS.get(c, ("#6b7280", ""))[0] for c in cats] + [TARGET_COLOR])
+    legend = "　".join(f"{CHART_COLORS.get(c, ('', '⬛'))[1]} {c}" for c in cats) + "　⬜ 建議量 100%"
+    lines = [
+        f"## 📉 最近 {len(dates)} 天：吃了建議量的幾 %",
+        "",
+        legend,
+        "",
+        "```mermaid",
+        f'%%{{init: {{"themeVariables": {{"xyChart": {{"plotColorPalette": "{palette}"}}}}}}}}%%',
+        "xychart-beta",
+        '    x-axis [' + ", ".join(f'"{d.month}/{d.day}"' for d in dates) + "]",
+        f'    y-axis "% 建議量" 0 --> {top}',
+    ]
+    lines += [f"    line [{', '.join(str(v) for v in series[c])}]" for c in cats]
+    lines += [f"    line [{', '.join('100' for _ in dates)}]", "```", ""]
+    lines += ["| 日期 | " + " | ".join(cats) + " |", "|---|" + "--:|" * len(cats)]
+    for d in reversed(dates):
+        cells = []
+        for c in cats:
+            rows = day_feeds(c, d, feeds)
+            t = target_kcal(c, d, weights)
+            e = eaten_kcal(c, d, feeds)
+            cells.append(f"{grams_text(rows)} · {round(e)} kcal · {round(e / t * 100) if t else 0}%"
+                         if rows else "—")
+        lines.append(f"| {md(d)} | " + " | ".join(cells) + " |")
+    return lines + [""]
+
+
+def today_lines(feeds, weights, today):
+    cats = list(CATS)
+    lines = [
         f"## 📅 今天 {today.year}/{md(today)}",
         "",
         "| | " + " | ".join(cats) + " |",
@@ -227,11 +281,19 @@ def render(feeds, weights, today):
             lines.append(f"| {t or '—'} | " + " | ".join(cells) + f" | {'、'.join(slot['notes'])} |")
     else:
         lines.append("_今天還沒有紀錄_")
+    return lines + [""]
+
+
+def render(feeds, weights, today):
+    cats = list(CATS)
+    lines = header_lines("這份檔案是自動產生的，不用手動改。要記錄餵食，直接跟 Claude 說「Mina 吃了 20 克」就好。")
+    lines += today_lines(feeds, weights, today)
+    lines += chart_lines(feeds, weights, today)
 
     # 最近幾天
     start = min([f["日期"] for f in feeds] + [today])
     start = max(start, today - timedelta(days=HISTORY_DAYS - 1))
-    lines += ["", f"## 📈 最近 {HISTORY_DAYS} 天", "",
+    lines += [f"## 📈 最近 {HISTORY_DAYS} 天", "",
               "| 日期 | " + " | ".join(cats) + " |", "|---|" + "---|" * len(cats)]
     d = today
     while d >= start:
@@ -276,6 +338,11 @@ def render(feeds, weights, today):
         "",
     ]
     REPORT.write_text("\n".join(lines), encoding="utf-8")
+
+    readme = header_lines(f"自動產生，不用手動改。完整紀錄（最近 {HISTORY_DAYS} 天、體重、建議量算法）見 [飲食紀錄.md](飲食紀錄.md)。")
+    readme += today_lines(feeds, weights, today)
+    readme += chart_lines(feeds, weights, today)
+    README.write_text("\n".join(readme), encoding="utf-8")
 
 
 def today_summary(feeds, weights, today):
